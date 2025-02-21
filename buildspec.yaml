@@ -1,0 +1,44 @@
+version: 0.2
+
+env:
+  variables:
+    # Default environment variables
+    S3_BUCKET: ""                      # Where SAM will upload packaged artifacts
+    STACK_NAME: "FLRA-Alexa-Stack"     # Name of the CloudFormation stack
+    LLMApiSecretName: "MyLLMApiSecret" # Secrets Manager secret name for LLM API key
+    ComprehendEnabled: "false"         # "true"/"false"
+    AlexaSkillId: ""                   # Alexa skill ID
+    DEPLOYMENT_STAGE: "development"    # Could be "development", "staging", or "production"
+
+phases:
+  install:
+    commands:
+      - echo "Installing AWS CLI & SAM CLI..."
+      - pip install --upgrade awscli aws-sam-cli
+  build:
+    commands:
+      - echo "Building the AWS SAM application..."
+      - sam build --use-container
+  post_build:
+    commands:
+      - echo "Packaging the AWS SAM application..."
+      - sam package \
+          --template-file template.yaml \
+          --output-template-file out.yaml \
+          --s3-bucket $S3_BUCKET
+      
+      - echo "Deploying the AWS SAM application..."
+      - sam deploy \
+          --template-file out.yaml \
+          --capabilities CAPABILITY_IAM \
+          --stack-name $STACK_NAME \
+          --parameter-overrides \
+              LLMApiSecretName=$LLMApiSecretName \
+              ComprehendEnabled=$ComprehendEnabled \
+              AlexaSkillId=$AlexaSkillId \
+              DeploymentStage=$DEPLOYMENT_STAGE
+
+artifacts:
+  type: zip
+  files:
+    - out.yaml

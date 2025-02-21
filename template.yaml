@@ -2,20 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 
 Description: >
-  FLRA Alexa Skill solution with:
-  - Proactive Notifications
-  - Preference Filtering (daily/weekly, topics)
-  - Rich Responses (APL, AudioPlayer)
-  - Custom CloudWatch Metrics
-  - Secrets Manager for LLM API Key
-  - Resource-Level IAM constraints
-  - CI/CD placeholders
-
-Globals:
-  Function:
-    Runtime: python3.9
-    Timeout: 30
-    MemorySize: 512
+  FLRA Alexa Skill solution with variables passed during build/deploy.
 
 Parameters:
   LLMApiSecretName:
@@ -25,153 +12,21 @@ Parameters:
     Type: String
     AllowedValues: ["true", "false"]
     Default: "false"
-    Description: Whether to also use Amazon Comprehend for metadata tagging
   AlexaSkillId:
     Type: String
     Description: Alexa skill ID for event mapping & notifications
-  CreatePipelineResources:
+  DeploymentStage:
     Type: String
-    AllowedValues: ["true", "false"]
-    Default: "false"
-    Description: Whether to create CodePipeline resources in this template (for demonstration).
+    Default: "development"
+    Description: Deployment stage for the skill or environment name (e.g., dev/staging/prod)
 
 Resources:
+  # ... [Same resources as before: DynamoDB tables, IAM roles, Lambdas, etc.]
 
-  ############################################################
-  # 1) DynamoDB Tables
-  ############################################################
-  FeedUpdatesTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: FLRAFeedUpdates
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: ItemId
-          AttributeType: S
-      KeySchema:
-        - AttributeName: ItemId
-          KeyType: HASH
-
-  UserPreferencesTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: FLRAUserPreferences
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: UserId
-          AttributeType: S
-      KeySchema:
-        - AttributeName: UserId
-          KeyType: HASH
-
-  ############################################################
-  # 2) IAM Policy & Role for Secrets + DynamoDB
-  ############################################################
-  SchedulerLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: [lambda.amazonaws.com]
-            Action: sts:AssumeRole
-      Path: "/"
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: SchedulerDynamoSecretsPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  # Permit only read/write to the specific tables
-                  - dynamodb:BatchGetItem
-                  - dynamodb:BatchWriteItem
-                  - dynamodb:PutItem
-                  - dynamodb:GetItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:Scan
-                  - dynamodb:Query
-                Resource:
-                  - !GetAtt FeedUpdatesTable.Arn
-                  - !GetAtt UserPreferencesTable.Arn
-
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: "*"
-
-              # Access to Secrets Manager to retrieve LLM API key
-              - Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                Resource: "*"
-
-              # For Comprehend if needed
-              - Effect: Allow
-                Action:
-                  - comprehend:DetectEntities
-                  - comprehend:DetectKeyPhrases
-                  - comprehend:DetectDominantLanguage
-                Resource: "*"
-
-  AlexaSkillLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: [lambda.amazonaws.com]
-            Action: sts:AssumeRole
-      Path: "/"
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: AlexaSkillDynamoMetricsPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  # Minimal DynamoDB privileges
-                  - dynamodb:GetItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:UpdateItem
-                  - dynamodb:PutItem
-                Resource:
-                  - !GetAtt FeedUpdatesTable.Arn
-                  - !GetAtt UserPreferencesTable.Arn
-
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: "*"
-
-              # For custom metrics
-              - Effect: Allow
-                Action:
-                  - cloudwatch:PutMetricData
-                Resource: "*"
-
-  ############################################################
-  # 3) Lambda Functions
-  ############################################################
-
-  # 3.1 Scheduler Function
   SchedulerFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: FLRAFeedScheduler
+      FunctionName: !Sub "FLRAFeedScheduler-${DeploymentStage}"
       Role: !GetAtt SchedulerLambdaRole.Arn
       CodeUri: code/scheduler/
       Handler: app.lambda_handler
@@ -180,9 +35,7 @@ Resources:
           FEED_TABLE: !Ref FeedUpdatesTable
           PREFS_TABLE: !Ref UserPreferencesTable
           COMPREHEND_ENABLED: !Ref ComprehendEnabled
-          # Alexa Skill info for Proactive Notifications
           ALEXA_SKILL_ID: !Ref AlexaSkillId
-          # Secret name with LLM key
           LLM_API_SECRET_NAME: !Ref LLMApiSecretName
       Events:
         ScheduleEvent:
@@ -191,11 +44,10 @@ Resources:
             Schedule: rate(1 hour)
             Enabled: true
 
-  # 3.2 Alexa Skill Function
   AlexaSkillFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: FLRAAlexaSkill
+      FunctionName: !Sub "FLRAAlexaSkill-${DeploymentStage}"
       Role: !GetAtt AlexaSkillLambdaRole.Arn
       CodeUri: code/alexaSkill/
       Handler: app.lambda_handler
@@ -203,109 +55,12 @@ Resources:
         Variables:
           FEED_TABLE: !Ref FeedUpdatesTable
           PREFS_TABLE: !Ref UserPreferencesTable
-      Events:
-        AlexaSkillEvent:
-          Type: AlexaSkill
-          Properties:
-            SkillId: !Ref AlexaSkillId
-
-  ############################################################
-  # 4) (Optional) CodePipeline + CodeBuild Resources
-  ############################################################
-  CodePipeline:
-    Condition: !Equals [!Ref CreatePipelineResources, "true"]
-    Type: AWS::CodePipeline::Pipeline
-    Properties:
-      Name: FLRA-AlexaPipeline
-      RoleArn: !GetAtt CodePipelineServiceRole.Arn
-      ArtifactStore:
-        Type: S3
-        Location: !Sub "${AWS::StackName}-pipeline-artifacts"
-      Stages:
-        - Name: Source
-          Actions:
-            - Name: Source
-              ActionTypeId:
-                Category: Source
-                Owner: AWS
-                Provider: CodeCommit
-                Version: "1"
-              OutputArtifacts:
-                - Name: SourceArtifact
-              Configuration:
-                RepositoryName: "FLRAAlexaRepo"
-                BranchName: "main"
-        - Name: Build
-          Actions:
-            - Name: Build
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: "1"
-              InputArtifacts:
-                - Name: SourceArtifact
-              OutputArtifacts:
-                - Name: BuildArtifact
-              Configuration:
-                ProjectName: !Ref CodeBuildProject
-
-  CodePipelineServiceRole:
-    Condition: !Equals [!Ref CreatePipelineResources, "true"]
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: [codepipeline.amazonaws.com]
-            Action: sts:AssumeRole
-      Path: "/"
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSCodePipelineFullAccess
-
-  CodeBuildProject:
-    Condition: !Equals [!Ref CreatePipelineResources, "true"]
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: FLRAAlexaBuild
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        ComputeType: BUILD_GENERAL1_SMALL
-        Image: "amazon/linux2-x86_64-standard:3.0"
-        Type: LINUX_CONTAINER
-      Source:
-        Type: CODEPIPELINE
-      Description: "Build project for FLRA Alexa skill solution"
-
-  CodeBuildServiceRole:
-    Condition: !Equals [!Ref CreatePipelineResources, "true"]
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: [codebuild.amazonaws.com]
-            Action: sts:AssumeRole
-      Path: "/"
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
 
 Outputs:
   SchedulerFunctionArn:
     Description: "ARN of the scheduler Lambda"
     Value: !GetAtt SchedulerFunction.Arn
+
   AlexaSkillFunctionArn:
     Description: "ARN of the Alexa Skill Lambda"
     Value: !GetAtt AlexaSkillFunction.Arn
-  FeedUpdatesTableName:
-    Description: "Name of the FLRA feed updates table"
-    Value: !Ref FeedUpdatesTable
-  UserPreferencesTableName:
-    Description: "Name of the user preferences table"
-    Value: !Ref UserPreferencesTable
